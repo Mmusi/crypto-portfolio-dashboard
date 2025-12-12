@@ -75,6 +75,7 @@ class CapitalBuildingDB {
 
   // Generic CRUD operations
   async add(storeName, data) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readwrite');
     const store = transaction.objectStore(storeName);
     return new Promise((resolve, reject) => {
@@ -85,6 +86,7 @@ class CapitalBuildingDB {
   }
 
   async update(storeName, data) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readwrite');
     const store = transaction.objectStore(storeName);
     return new Promise((resolve, reject) => {
@@ -95,6 +97,7 @@ class CapitalBuildingDB {
   }
 
   async delete(storeName, id) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readwrite');
     const store = transaction.objectStore(storeName);
     return new Promise((resolve, reject) => {
@@ -105,6 +108,7 @@ class CapitalBuildingDB {
   }
 
   async get(storeName, id) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readonly');
     const store = transaction.objectStore(storeName);
     return new Promise((resolve, reject) => {
@@ -115,6 +119,7 @@ class CapitalBuildingDB {
   }
 
   async getAll(storeName) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readonly');
     const store = transaction.objectStore(storeName);
     return new Promise((resolve, reject) => {
@@ -125,6 +130,7 @@ class CapitalBuildingDB {
   }
 
   async getByIndex(storeName, indexName, value) {
+    if (!this.db) await this.init();
     const transaction = this.db.transaction([storeName], 'readonly');
     const store = transaction.objectStore(storeName);
     const index = store.index(indexName);

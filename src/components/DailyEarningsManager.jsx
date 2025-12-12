@@ -80,6 +80,13 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
         setStatus('Saved');
         if (onSaved) onSaved(payload, { action: 'add' });
       }
+      // Verify persistence and log to help debugging
+      try {
+        const saved = await capitalBuildingDB.getEarningsByDate(payload.date);
+        console.debug('DailyEarningsManager: saved earnings for date', payload.date, saved);
+      } catch (err) {
+        console.warn('DailyEarningsManager: could not verify saved earnings', err);
+      }
       setForm({ platformName: '', tokenName: '', amountToken: '', category: CATEGORIES[0], notes: '' });
       setEditingId(null);
       await loadEntries();

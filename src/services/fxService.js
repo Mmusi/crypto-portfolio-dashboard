@@ -11,13 +11,30 @@ class FxService {
   async fetchRate(base = 'USD', target = 'BWP') {
     const key = this._key(base, target);
     try {
-      // Use exchangerate.host free API
-      const resp = await fetch(`https://api.exchangerate.host/latest?base=${base}&symbols=${target}`);
-      if (!resp.ok) throw new Error(`FX fetch failed: ${resp.status}`);
-      const data = await resp.json();
-      if (data && data.rates && data.rates[target]) {
-        this.rates[key] = { rate: Number(data.rates[target]), lastUpdated: new Date() };
-        return this.rates[key];
+      // Try exchangerate.host first
+      const endpoints = [
+        `https://api.exchangerate.host/latest?base=${base}&symbols=${target}`,
+        // fallback endpoints
+        `https://open.er-api.com/v6/latest/${base}`,
+        `https://api.exchangerate-api.com/v4/latest/${base}`
+      ];
+
+      for (const url of endpoints) {
+        try {
+          const resp = await fetch(url);
+          if (!resp.ok) { console.warn('FxService.fetchRate: non-ok response', url, resp.status); continue; }
+          const data = await resp.json();
+          // Normalized formats: exchangerate.host -> { rates: { BWP: rate } }
+          // open.er-api and exchangerate-api -> { rates: { BWP: rate } }
+          const rateVal = (data && data.rates && (data.rates[target] || data.rates[target.toUpperCase()])) || null;
+          if (rateVal) {
+            this.rates[key] = { rate: Number(rateVal), lastUpdated: new Date(), source: url };
+            return this.rates[key];
+          }
+        } catch (err) {
+          console.warn('FxService.fetchRate attempt failed', url, err);
+          continue;
+        }
       }
     } catch (err) {
       console.warn('FxService.fetchRate error', err);
@@ -35,12 +52,13 @@ class FxService {
   getLatestRate(base = 'USD', target = 'BWP') {
     const key = this._key(base, target);
     const rec = this.rates[key];
-    return rec || { rate: 1, lastUpdated: null };
+    return rec || { rate: null, lastUpdated: null };
   }
 
   // Synchronous convert using cached rate (fallback to 1 if missing)
   convertSync(amount, base = 'USD', target = 'BWP') {
-    const r = this.getLatestRate(base, target).rate || 1;
+    const r = this.getLatestRate(base, target).rate;
+    if (!r) return NaN;
     return amount * r;
   }
 }

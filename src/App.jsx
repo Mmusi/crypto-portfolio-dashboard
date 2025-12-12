@@ -43,6 +43,53 @@ function App() {
   useEffect(() => {
     // Initialize IndexedDB and load persisted holdings (if any)
     const setup = async () => {
+      // DEV: instrument HTMLMediaElement play/pause to trace unexpected AbortError issues
+      try {
+        if (typeof window !== 'undefined' && process.env.NODE_ENV === 'development') {
+          const proto = HTMLMediaElement && HTMLMediaElement.prototype;
+          if (proto && !proto.__play_wrapped) {
+            const origPlay = proto.play;
+            proto.play = function(...args) {
+              console.trace('HTMLMediaElement.play called', this, args);
+              const p = origPlay.apply(this, args);
+              // avoid uncaught rejections during dev trace
+              if (p && typeof p.catch === 'function') p.catch(err => console.warn('HTMLMediaElement.play rejected', err));
+              return p;
+            };
+            const origPause = proto.pause;
+            proto.pause = function(...args) {
+              console.trace('HTMLMediaElement.pause called', this, args);
+              return origPause.apply(this, args);
+            };
+            proto.__play_wrapped = true;
+            console.debug('DEV: media play/pause instrumentation active');
+          }
+        }
+      } catch (err) {
+        console.warn('Error setting up media instrumentation', err);
+      }
+      // DEV: catch unhandled promise rejections to help find aborted media play errors
+      try {
+        if (typeof window !== 'undefined') {
+          window.addEventListener('unhandledrejection', (ev) => {
+            try {
+              const reason = ev.reason;
+              // If this is the known media play AbortError, prevent default logging (avoids noisy console errors)
+              if (reason && (reason.name === 'AbortError' || (reason && reason.message && reason.message.includes('play()')))) {
+                console.warn('Suppressed known media AbortError from play()/pause()', reason);
+                // Prevent default so browsers don't log noisy stack traces for this known benign race condition
+                if (typeof ev.preventDefault === 'function') ev.preventDefault();
+                return;
+              }
+            } catch (inner) {
+              // fallthrough to log
+            }
+            console.error('Unhandled promise rejection', ev.reason, ev);
+          });
+        }
+      } catch (err) {
+        console.warn('Error setting up unhandledrejection listener', err);
+      }
       try {
         await capitalBuildingDB.init();
         // Load baseHoldings if present; otherwise set baseHoldings from persisted 'holdings' or current holdings
@@ -79,18 +126,19 @@ function App() {
         console.warn('Error loading display currency setting', err);
       }
 
-      // Initialize FX service and fetch rates if needed
+      // Initialize FX service and fetch rates if needed (use dynamic import to avoid potential runtime issues)
       try {
-          await fxService.init('USD', 'BWP');
-          // update fx info in state
-          const info = fxService.getLatestRate('USD', 'BWP');
-          setFxInfo({ rate: info.rate, lastUpdated: info.lastUpdated });
-          // Also schedule periodic refresh (update state each run)
-          setInterval(async () => {
-            await fxService.init('USD', 'BWP');
-            const updated = fxService.getLatestRate('USD', 'BWP');
-            setFxInfo({ rate: updated.rate, lastUpdated: updated.lastUpdated });
-          }, 10 * 60 * 1000);
+        const fxMod = await import('./services/fxService');
+        await fxMod.default.init('USD', 'BWP');
+        // update fx info in state
+        const info = fxMod.default.getLatestRate('USD', 'BWP');
+        setFxInfo({ rate: info.rate, lastUpdated: info.lastUpdated });
+        // Also schedule periodic refresh (update state each run)
+        setInterval(async () => {
+          await fxMod.default.init('USD', 'BWP');
+          const updated = fxMod.default.getLatestRate('USD', 'BWP');
+          setFxInfo({ rate: updated.rate, lastUpdated: updated.lastUpdated });
+        }, 10 * 60 * 1000);
       } catch (err) {
         console.warn('Error initializing FX service', err);
       }
@@ -181,6 +229,7 @@ function App() {
   const recomputeHoldingsFromEarnings = async () => {
     try {
       const allEarnings = await capitalBuildingDB.getAll('earnings');
+      console.debug('recomputeHoldingsFromEarnings -> total earnings found:', allEarnings.length, allEarnings.slice(0,5));
       const totalsByToken = {};
       allEarnings.forEach(e => {
         const t = (e.tokenName || '').toUpperCase();
@@ -200,8 +249,31 @@ function App() {
       await capitalBuildingDB.saveSetting('holdingsLastUpdated', now);
       setHoldingsLastUpdated(now);
       console.log('Recomputed holdings from earnings', newHoldings);
+      // Ensure portfolioHistory has a datapoint for today (and maintain unique dates)
+      const { totalValue } = calculateAllocations(newHoldings, prices);
+      const todayStr = new Date().toISOString().split('T')[0];
+      setPortfolioHistory(prev => {
+        // if there's an entry for today, replace it; otherwise append
+        const other = prev.filter(p => new Date(p.date).toISOString().split('T')[0] !== todayStr);
+        return [...other, { date: new Date(), value: totalValue }].sort((a,b) => new Date(a.date) - new Date(b.date));
+      });
     } catch (err) {
       console.error('Error recomputing holdings:', err);
+    }
+  };
+
+  const addHistoryPointForDate = async (dateStr) => {
+    try {
+      // Compute current portfolio value and add/replace a history point with date=dateStr
+      const { totalValue } = calculateAllocations(holdings, prices);
+      const dateObj = new Date(dateStr);
+      setPortfolioHistory(prev => {
+        // Remove any existing point with same date string
+        const filtered = prev.filter(p => new Date(p.date).toISOString().split('T')[0] !== dateStr);
+        return [...filtered, { date: dateObj, value: totalValue }].sort((a,b) => new Date(a.date) - new Date(b.date));
+      });
+    } catch (err) {
+      console.error('Error adding history point for date', dateStr, err);
     }
   };
 
@@ -292,8 +364,26 @@ function App() {
                   {lastUpdate ? lastUpdate.toLocaleTimeString() : 'Loading...'}
                 </p>
               </div>
-                {displayCurrency === 'BWP' && fxInfo?.rate && (
-                  <div className="text-xs text-gray-400 ml-4">1 USD = {fxInfo.rate.toFixed(2)} BWP (updated {fxInfo.lastUpdated ? new Date(fxInfo.lastUpdated).toLocaleTimeString() : 'unknown'})</div>
+                {displayCurrency === 'BWP' && (
+                  fxInfo?.rate ? (
+                    <div className="text-xs text-gray-400 ml-4">1 USD = {fxInfo.rate.toFixed(2)} BWP (updated {fxInfo.lastUpdated ? new Date(fxInfo.lastUpdated).toLocaleTimeString() : 'unknown'})</div>
+                  ) : (
+                    <div className="flex items-center space-x-3 ml-4">
+                      <div className="text-xs text-yellow-300">BWP rates unavailable</div>
+                      <button onClick={async () => {
+                        try {
+                          const fxMod = await import('./services/fxService');
+                          const res = await fxMod.default.init('USD', 'BWP');
+                          if (res) setFxInfo({ rate: res.rate, lastUpdated: res.lastUpdated, source: res.source });
+                          else setFxInfo({ rate: null, lastUpdated: null, error: 'fetch failed' });
+                        } catch (err) {
+                          console.warn('Error refreshing FX rate manually', err);
+                          setFxInfo({ rate: null, lastUpdated: null, error: err.message });
+                        }
+                      }} className="text-xs px-2 py-1 bg-gray-700 text-white rounded">Refresh FX</button>
+                      {fxInfo?.error && <div className="text-xs text-red-400">{fxInfo.error}</div>}
+                    </div>
+                  )
                 )}
 
               <button
@@ -313,11 +403,12 @@ function App() {
                   // update module-level formatter
                   const { setDisplayCurrency } = await import('./utils/portfolioCalculations');
                   setDisplayCurrency(val);
-                  // if switching to BWP, ensure FX rates are fetched
+                  // if switching to BWP, ensure FX rates are fetched (dynamic import)
                   if (val === 'BWP') {
                     try {
-                      await fxService.init('USD', 'BWP');
-                      const updated = fxService.getLatestRate('USD', 'BWP');
+                      const fxMod = await import('./services/fxService');
+                      await fxMod.default.init('USD', 'BWP');
+                      const updated = fxMod.default.getLatestRate('USD', 'BWP');
                       setFxInfo({ rate: updated.rate, lastUpdated: updated.lastUpdated });
                     } catch (err) {
                       console.warn('Error fetching FX rate on currency change', err);
@@ -424,13 +515,14 @@ function App() {
       {showEarningsManager && (
         <DailyEarningsManager
           onClose={handleCloseEarningsManager}
-          onSaved={async (payload, { action }) => {
-            // When earnings change, recompute holdings, reload summaries, and refresh prices
-            await recomputeHoldingsFromEarnings();
-            await loadEarningsSummary();
-            await loadTradeSummary();
-            fetchPrices();
-          }}
+            onSaved={async (payload, { action }) => {
+              // When earnings change, recompute holdings, reload summaries, add history point, and refresh prices
+              await recomputeHoldingsFromEarnings();
+              if (payload && payload.date) await addHistoryPointForDate(payload.date);
+              await loadEarningsSummary();
+              await loadTradeSummary();
+              fetchPrices();
+            }}
         />
       )}
 

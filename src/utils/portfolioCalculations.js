@@ -187,7 +187,16 @@ export const formatCurrency = (value) => {
   const v = Number(value) || 0;
   // If BWP selected, convert using cached FX rate (synchronous) from fxService
   if (displayCurrency === 'BWP') {
+    const info = fxService.getLatestRate('USD', 'BWP');
+    const rate = info?.rate || null;
+    // If rate is not available yet, show a placeholder (don't incorrectly display same number)
+    if (!rate || !info.lastUpdated) {
+      return `BWP -`;
+    }
     const converted = fxService.convertSync(v, 'USD', 'BWP');
+    // Apply a minimum display threshold so very small converted amounts don't display misleadingly small values
+    const MIN_DISPLAY_BWP = 0.1; // show at least BWP 0.10
+    const displayValue = (converted > 0 && converted < MIN_DISPLAY_BWP) ? MIN_DISPLAY_BWP : converted;
     const formatted = converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return `BWP ${formatted}`;
   }
