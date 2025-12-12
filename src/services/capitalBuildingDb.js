@@ -1,6 +1,6 @@
 // IndexedDB service for Capital Building features
 const DB_NAME = 'CapitalBuildingDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 class CapitalBuildingDB {
   constructor() {
@@ -60,6 +60,14 @@ class CapitalBuildingDB {
         // Settings store
         if (!db.objectStoreNames.contains('settings')) {
           db.createObjectStore('settings', { keyPath: 'id' });
+        }
+
+        // Activities store (new in v2)
+        if (!db.objectStoreNames.contains('activities')) {
+          const activitiesStore = db.createObjectStore('activities', { keyPath: 'id', autoIncrement: true });
+          activitiesStore.createIndex('date', 'date', { unique: false });
+          activitiesStore.createIndex('platformName', 'platformName', { unique: false });
+          activitiesStore.createIndex('category', 'category', { unique: false });
         }
       };
     });
@@ -129,11 +137,23 @@ class CapitalBuildingDB {
 
   // Earnings operations
   async addEarning(earning) {
-    return this.add('earnings', {
+    const record = {
       ...earning,
       date: earning.date || new Date().toISOString().split('T')[0],
       timestamp: new Date().toISOString()
-    });
+    };
+
+    // Ensure we don't pass an invalid key value for 'id' (IndexedDB key must be a string or number)
+    if (record.hasOwnProperty('id')) {
+      const idType = typeof record.id;
+      if (!(idType === 'number' || idType === 'string')) {
+        // remove invalid id so autoIncrement can assign one
+        delete record.id;
+      }
+    }
+
+    console.debug('capitalBuildingDB.addEarning -> adding record:', record);
+    return this.add('earnings', record);
   }
 
   async getEarningsByDate(date) {
@@ -152,12 +172,22 @@ class CapitalBuildingDB {
   // Trades operations
   async addTrade(trade) {
     const pnl = (trade.exitPrice - trade.entryPrice) * trade.size;
-    return this.add('trades', {
+    const record = {
       ...trade,
       PNL_USDT: pnl,
       date: trade.date || new Date().toISOString().split('T')[0],
       timestamp: new Date().toISOString()
-    });
+    };
+
+    if (record.hasOwnProperty('id')) {
+      const idType = typeof record.id;
+      if (!(idType === 'number' || idType === 'string')) {
+        delete record.id;
+      }
+    }
+
+    console.debug('capitalBuildingDB.addTrade -> adding record:', record);
+    return this.add('trades', record);
   }
 
   async getTradesByExchange(exchange) {
@@ -236,6 +266,31 @@ class CapitalBuildingDB {
   }
 
   // Analytics operations
+  async addActivity(activity) {
+    const record = {
+      ...activity,
+      date: activity.date || new Date().toISOString().split('T')[0],
+      timestamp: new Date().toISOString()
+    };
+
+    if (record.hasOwnProperty('id')) {
+      const idType = typeof record.id;
+      if (!(idType === 'number' || idType === 'string')) delete record.id;
+    }
+
+      console.debug('capitalBuildingDB.addActivity -> adding record:', record);
+    return this.add('activities', record);
+  }
+
+  async getActivitiesByDate(date) {
+    return this.getByIndex('activities', 'date', date);
+  }
+
+  async getActivitiesByDateRange(startDate, endDate) {
+    const allActivities = await this.getAll('activities');
+    return allActivities.filter(a => a.date >= startDate && a.date <= endDate);
+  }
+
   async getTotalEarningsToday() {
     const today = new Date().toISOString().split('T')[0];
     const earnings = await this.getEarningsByDate(today);

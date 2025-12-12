@@ -71,7 +71,7 @@ const CategoryDashboards = ({ holdings, prices }) => {
                 <div className="grid grid-cols-2 gap-2 mt-3 text-sm">
                   <div>
                     <p className="text-gray-400">Price</p>
-                    <p className="text-white">${asset.price.toFixed(2)}</p>
+                      <p className="text-white">{asset.price ? formatCurrency(asset.price) : '-'}</p>
                   </div>
                   <div>
                     <p className="text-gray-400">Holdings</p>

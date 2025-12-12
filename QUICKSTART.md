@@ -67,6 +67,18 @@ The dashboard will open automatically in your browser at `http://localhost:3000`
 ### Refresh Data
 Click the **Refresh** button in the header to manually update prices
 
+### Persist Holdings
+Open the **Manage** button in the header to add, edit, or remove holdings; changes are saved to the browser's IndexedDB and will persist across sessions.
+
+### Daily Earnings
+Open the **Earnings** button in the header to add daily earnings (date, platform, token, amount, category, notes). Amounts are converted to USDT automatically using CoinGecko and persisted to IndexedDB. Use the `Load` button inside the modal to reload saved entries for the selected date.
+
+### Trades
+Open the **Trades** button in the header to add trades (date, exchange, pair, type, direction, entry/exit price, size). PNL is computed automatically and saved to the `trades` store. Use the modal to edit or delete trades for a given date.
+
+### Alert Settings
+Open **Settings** in the header to edit alert thresholds (price movement, allocation deviation, portfolio value, Sharpe ratio, volatility). Changes are saved to IndexedDB and applied immediately to alert checks.
+
 ### Switch Timeframes
 In the Performance Charts section, click different timeframe buttons (7d, 30d, 90d, 1y)
 

@@ -49,7 +49,8 @@ const PerformanceCharts = ({ portfolioHistory = [] }) => {
   const chartData = {
     labels: filteredData.map(item => {
       const date = new Date(item.date);
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      // Show full date (YYYY-MM-DD) for clarity and to support chart x-axis categorization
+      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     }),
     datasets: [
       {

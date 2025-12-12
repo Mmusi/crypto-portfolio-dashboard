@@ -176,14 +176,25 @@ export const groupByType = (assets, holdings, prices, portfolioConfig) => {
   return grouped;
 };
 
-// Format currency
+import fxService from '../services/fxService';
+// Module-level display currency state
+let displayCurrency = 'USD';
+export const setDisplayCurrency = (c) => { displayCurrency = c; };
+export const getDisplayCurrency = () => displayCurrency;
+
+// Format currency using the selected display currency (USD -> $, BWP -> BWP)
 export const formatCurrency = (value) => {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+  const v = Number(value) || 0;
+  // If BWP selected, convert using cached FX rate (synchronous) from fxService
+  if (displayCurrency === 'BWP') {
+    const converted = fxService.convertSync(v, 'USD', 'BWP');
+    const formatted = converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `BWP ${formatted}`;
+  }
+
+  // Default to USD with $ prefix
+  const formatted = v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `$${formatted}`;
 };
 
 // Format percentage

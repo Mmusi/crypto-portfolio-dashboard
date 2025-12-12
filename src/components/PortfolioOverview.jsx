@@ -7,7 +7,7 @@ import { PORTFOLIO_CONFIG, RISK_TIERS } from '../types/portfolio';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const PortfolioOverview = ({ holdings, prices, totalValue }) => {
+const PortfolioOverview = ({ holdings, prices, totalValue, holdingsLastUpdated }) => {
   const categorizedAssets = groupByCategory(null, holdings, prices, PORTFOLIO_CONFIG);
   
   // Calculate category allocations
@@ -109,6 +109,9 @@ const PortfolioOverview = ({ holdings, prices, totalValue }) => {
           <div>
             <p className="text-gray-400 text-sm mb-1">Total Portfolio Value</p>
             <h2 className="text-4xl font-bold text-white">{formatCurrency(totalValue)}</h2>
+              {holdingsLastUpdated && (
+                <div className="text-xs text-gray-400 mt-1">Holdings last updated: {new Date(holdingsLastUpdated).toLocaleString()}</div>
+              )}
             <div className="flex items-center mt-2">
               {portfolio24hChangePercent >= 0 ? (
                 <TrendingUp className="w-5 h-5 text-crypto-green mr-2" />
