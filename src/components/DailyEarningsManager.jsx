@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import capitalBuildingDB from '../services/capitalBuildingDb';
 import conversionService from '../services/conversionService';
+import cryptoApi from '../services/cryptoApi';
 import { formatCurrency } from '../utils/portfolioCalculations';
 import { PlusCircle, Save, Trash, X } from 'lucide-react';
 
@@ -14,6 +15,8 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
   const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState('');
 
   useEffect(() => {
     loadEntries();
@@ -37,11 +40,49 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
   const computeAmountUSDT = async (token, amount) => {
     const amt = Number(amount) || 0;
     if (amt === 0) return 0;
+    // If a date other than today is selected, try to use historical price for accuracy
+    const selectedDate = date; // closure var
+    const todayStr = new Date().toISOString().split('T')[0];
+    // Attempt to resolve coin id first to improve lookup reliability
+    try {
+      await cryptoApi.resolveCoinId(token);
+    } catch (err) {
+      // ignore resolution errors, we'll try other fallbacks
+    }
+    if (selectedDate && selectedDate !== todayStr) {
+      try {
+        const price = await cryptoApi.getPriceOnDate(token, selectedDate);
+        if (price !== null && price !== undefined) return amt * price;
+        // mark that we fell back to current price
+        setValidationError(`Historical price not found for ${token} on ${selectedDate}; using current price.`);
+        setTimeout(() => setValidationError(''), 2000);
+      } catch (err) {
+        console.warn('Error fetching historical price for computeAmountUSDT', err);
+      }
+    }
+
     const val = await conversionService.convertToUSDT(token, amt);
+    // If val is 0, try resolving coin id and trying again with resolved id
+    if ((val === 0 || Number.isNaN(val)) && !['USDT','USDC','DAI','BUSD'].includes(token)) {
+      try {
+        const cid = await cryptoApi.resolveCoinId(token);
+        if (cid) {
+          // ask cryptoApi to get price by resolved id
+          const p = await cryptoApi.getPriceOnDate(token, todayStr) || (await cryptoApi.getPrices([token]))[token.toUpperCase()]?.price;
+          if (p) return amt * p;
+        }
+      } catch (err) {
+        console.warn('Fallback resolution attempt failed for token', token, err);
+      }
+    }
     return val;
   };
 
   const handleAddOrUpdate = async () => {
+    if (saving) return; // prevent double clicks
+    setValidationError('');
+    setSaving(true);
+
     const token = form.tokenName.trim().toUpperCase();
     const platform = form.platformName.trim();
     const amountToken = Number(form.amountToken) || 0;
@@ -54,6 +95,15 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
     }
 
     const amountUSDT = await computeAmountUSDT(token, amountToken);
+    console.debug('DailyEarningsManager: computeAmountUSDT ->', { token, amountToken, amountUSDT, date });
+    // If conversion failed (no price found), warn and block save
+    if ((amountUSDT === 0 || Number.isNaN(amountUSDT)) && !['USDT','USDC','DAI','BUSD'].includes(token)) {
+      setValidationError(`No USD price found for token '${token}'. Please check the token symbol.`);
+      setSaving(false);
+      setStatus('Price lookup failed');
+      setTimeout(() => setStatus(''), 1800);
+      return;
+    }
     const targetAchieved = amountUSDT >= DAILY_TARGET;
 
     const payload = {
@@ -70,6 +120,24 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
     };
 
     try {
+      // Client-side duplicate check before attempting to save
+      const existingForDate = await capitalBuildingDB.getEarningsByDate(date);
+      const duplicate = (existingForDate || []).find(e => (
+        (e.tokenName || '').toUpperCase() === (payload.tokenName || '').toUpperCase()
+        && (e.platformName || '') === (payload.platformName || '')
+        && Number(e.amountToken || 0) === Number(payload.amountToken || 0)
+        && (e.category || '') === (payload.category || '')
+        && (!editingId || e.id !== editingId)
+      ));
+      if (duplicate) {
+        setValidationError('Duplicate entry detected for this date (same platform, token, amount, category).');
+        setStatus('Duplicate');
+        setSaving(false);
+        if (onSaved) onSaved(duplicate, { action: 'duplicate' });
+        await loadEntries();
+        setTimeout(() => setStatus(''), 1500);
+        return;
+      }
       if (editingId) {
         await capitalBuildingDB.update('earnings', payload);
         setStatus('Updated');
@@ -77,8 +145,14 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
       } else {
         const id = await capitalBuildingDB.addEarning(payload);
         payload.id = id;
-        setStatus('Saved');
-        if (onSaved) onSaved(payload, { action: 'add' });
+        if (id && id === payload.id) {
+          // If DB returned an existing id (duplicate detected by DB) addEarning returned existing id
+          setStatus('Duplicate (existing entry)');
+          if (onSaved) onSaved(payload, { action: 'duplicate' });
+        } else {
+          setStatus('Saved');
+          if (onSaved) onSaved(payload, { action: 'add' });
+        }
       }
       // Verify persistence and log to help debugging
       try {
@@ -91,9 +165,11 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
       setEditingId(null);
       await loadEntries();
       setTimeout(() => setStatus(''), 1200);
+      setSaving(false);
     } catch (err) {
       console.error('Error saving earning:', err);
       setStatus('Error');
+      setSaving(false);
     }
   };
 
@@ -151,9 +227,12 @@ const DailyEarningsManager = ({ onClose, onSaved }) => {
 
         <div className="flex items-center justify-end space-x-2 mb-4">
           <span className="text-sm text-gray-300">Daily Total: <strong className="text-white">{formatCurrency(totalDaily)}</strong></span>
-          <button onClick={handleAddOrUpdate} className="flex items-center bg-crypto-blue hover:bg-blue-600 text-white px-3 py-2 rounded">
-            <Save className="w-4 h-4 mr-2" /> {editingId ? 'Update' : 'Add'}
-          </button>
+          <div className="flex items-center space-x-2">
+            {validationError && <div className="text-sm text-yellow-300 mr-2">{validationError}</div>}
+            <button onClick={handleAddOrUpdate} disabled={saving} className={`flex items-center ${saving ? 'opacity-60 cursor-not-allowed' : 'bg-crypto-blue hover:bg-blue-600'} text-white px-3 py-2 rounded`}>
+              <Save className="w-4 h-4 mr-2" /> {saving ? (editingId ? 'Updating...' : 'Saving...') : (editingId ? 'Update' : 'Add')}
+            </button>
+          </div>
           {status && <div className="text-sm text-gray-300">{status}</div>}
         </div>
 

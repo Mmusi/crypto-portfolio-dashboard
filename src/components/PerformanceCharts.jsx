@@ -27,6 +27,7 @@ ChartJS.register(
 
 const PerformanceCharts = ({ portfolioHistory = [] }) => {
   const [timeframe, setTimeframe] = useState('30d');
+  const [showByAsset, setShowByAsset] = useState(false);
 
   // Filter data based on timeframe
   const getFilteredData = () => {
@@ -41,18 +42,38 @@ const PerformanceCharts = ({ portfolioHistory = [] }) => {
     const days = daysMap[timeframe] || 30;
     const cutoffDate = new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
     
-    return portfolioHistory.filter(item => new Date(item.date) >= cutoffDate);
+    // Ensure we work with Date objects and sort ascending
+    return portfolioHistory
+      .map(item => ({ date: item.date instanceof Date ? item.date : new Date(item.date), value: item.value }))
+      .filter(item => item.date >= cutoffDate)
+      .sort((a,b) => new Date(a.date) - new Date(b.date));
   };
 
   const filteredData = getFilteredData();
 
   const chartData = {
-    labels: filteredData.map(item => {
-      const date = new Date(item.date);
-      // Show full date (YYYY-MM-DD) for clarity and to support chart x-axis categorization
-      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-    }),
-    datasets: [
+    labels: filteredData.map(item => item.date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })),
+    datasets: showByAsset ? (() => {
+      // Build per-asset datasets
+      const assetSet = new Set();
+      filteredData.forEach(fd => {
+        if (fd.holdings) Object.keys(fd.holdings).forEach(a => assetSet.add(a));
+      });
+      const assets = Array.from(assetSet).sort();
+      const palette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316'];
+      return assets.map((asset, idx) => ({
+        label: asset,
+        data: filteredData.map(fd => (fd.perAssetValues && fd.perAssetValues[asset]) ? fd.perAssetValues[asset] : 0),
+        borderColor: palette[idx % palette.length],
+        backgroundColor: palette[idx % palette.length].replace('#','') ? `${palette[idx % palette.length]}22` : 'rgba(59,130,246,0.08)',
+        fill: true,
+        tension: 0.4,
+        pointRadius: 0,
+        pointHoverRadius: 6,
+        borderWidth: 2,
+        stack: 'assets'
+      }));
+    })() : [
       {
         label: 'Portfolio Value',
         data: filteredData.map(item => item.value),
@@ -164,6 +185,7 @@ const PerformanceCharts = ({ portfolioHistory = [] }) => {
               {tf}
             </button>
           ))}
+          <button onClick={() => setShowByAsset(s => !s)} className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${showByAsset ? 'bg-crypto-blue text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{showByAsset ? 'By asset' : 'Total'}</button>
         </div>
       </div>
 

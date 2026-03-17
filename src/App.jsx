@@ -36,7 +36,6 @@ function App() {
   const [displayCurrency, setDisplayCurrencyState] = useState('USD');
   const [holdingsLastUpdated, setHoldingsLastUpdated] = useState(null);
   const [showActivitiesManager, setShowActivitiesManager] = useState(false);
-  const [activitiesSummary, setActivitiesSummary] = useState({ totalToday: 0, total7: 0 });
   const [fxInfo, setFxInfo] = useState({ rate: null, lastUpdated: null });
 
   // Fetch prices on mount and periodically
@@ -146,7 +145,6 @@ function App() {
       await loadEarningsSummary();
       await recomputeHoldingsFromEarnings();
       await loadTradeSummary();
-      await loadActivitiesSummary();
       // Load holdings last-updated
       try {
         const hUpdated = await capitalBuildingDB.getSetting('holdingsLastUpdated');
@@ -157,6 +155,7 @@ function App() {
 
       // Start price fetch loop
       fetchPrices();
+        // DEV: backfill helper is available via header button (defined at top-level)
     };
 
     setup();
@@ -182,10 +181,18 @@ function App() {
       
       // Calculate current portfolio value for history
       const { totalValue } = calculateAllocations(holdings, priceData);
-      setPortfolioHistory(prev => [
-        ...prev,
-        { date: new Date(), value: totalValue }
-      ].slice(-365)); // Keep last year of data
+      const todayStr = new Date().toISOString().split('T')[0];
+      const [y,m,d] = todayStr.split('-').map(Number);
+      const todayDate = new Date(y, m-1, d);
+      setPortfolioHistory(prev => {
+        // Replace existing today's point or append; keep max 365 entries
+        const filtered = prev.filter(p => {
+          const pd = p.date instanceof Date ? p.date : new Date(p.date);
+          return pd.toISOString().split('T')[0] !== todayStr;
+        });
+        const merged = [...filtered, { date: todayDate, value: totalValue }].sort((a,b) => new Date(a.date) - new Date(b.date));
+        return merged.slice(-365);
+      }); // Keep last year of data
       
       // Calculate returns (simplified)
       if (portfolioHistory.length > 0) {
@@ -249,16 +256,83 @@ function App() {
       await capitalBuildingDB.saveSetting('holdingsLastUpdated', now);
       setHoldingsLastUpdated(now);
       console.log('Recomputed holdings from earnings', newHoldings);
+      // Rebuild portfolio history from earnings so chart reflects amounts on their saved dates
+      await rebuildPortfolioHistoryFromEarnings();
       // Ensure portfolioHistory has a datapoint for today (and maintain unique dates)
       const { totalValue } = calculateAllocations(newHoldings, prices);
       const todayStr = new Date().toISOString().split('T')[0];
+      const todayDate = (() => { const [y,m,d] = todayStr.split('-').map(Number); return new Date(y, m-1, d); })();
       setPortfolioHistory(prev => {
         // if there's an entry for today, replace it; otherwise append
-        const other = prev.filter(p => new Date(p.date).toISOString().split('T')[0] !== todayStr);
-        return [...other, { date: new Date(), value: totalValue }].sort((a,b) => new Date(a.date) - new Date(b.date));
+        const other = prev.filter(p => {
+          const pd = p.date instanceof Date ? p.date : new Date(p.date);
+          return pd.toISOString().split('T')[0] !== todayStr;
+        });
+        const merged = [...other, { date: todayDate, value: totalValue }];
+        merged.sort((a,b) => new Date(a.date) - new Date(b.date));
+        console.debug('portfolioHistory updated (recompute):', merged.map(x => ({ date: new Date(x.date).toISOString().split('T')[0], value: x.value }))); 
+        return merged;
       });
     } catch (err) {
       console.error('Error recomputing holdings:', err);
+    }
+  };
+
+  // Rebuild portfolio history by processing earnings cumulatively by date
+  const rebuildPortfolioHistoryFromEarnings = async () => {
+    try {
+      const allEarnings = await capitalBuildingDB.getAll('earnings');
+      if (!allEarnings || allEarnings.length === 0) {
+        setPortfolioHistory([]);
+        return;
+      }
+
+      // Group earnings by date and sort unique dates ascending
+      const dates = Array.from(new Set(allEarnings.map(e => e.date))).sort((a,b) => new Date(a) - new Date(b));
+
+      // We'll need prices for all tokens encountered
+      const tokens = Array.from(new Set(allEarnings.map(e => (e.tokenName || '').toUpperCase()).filter(Boolean)));
+      // Pre-fetch current prices as fallback
+      const currentPrices = await cryptoApi.getPrices(tokens);
+
+      const history = [];
+      const cumulative = {}; // totals by token over time
+
+      for (const d of dates) {
+        // include earnings up to and including date d
+        const upto = allEarnings.filter(e => e.date <= d);
+        // reset cumulative then compute to ensure idempotency
+        Object.keys(cumulative).forEach(k => delete cumulative[k]);
+        upto.forEach(e => {
+          const t = (e.tokenName || '').toUpperCase();
+          if (!t) return;
+          cumulative[t] = (cumulative[t] || 0) + (Number(e.amountToken) || 0);
+        });
+
+        // compute per-asset values using historical price for date d (fallback to currentPrices)
+        let totalValue = 0;
+        const perAssetValues = {};
+        for (const [t, amt] of Object.entries(cumulative)) {
+          let price = await cryptoApi.getPriceOnDate(t, d);
+          if (price === null || price === undefined) {
+            price = currentPrices[t]?.price || 0;
+          }
+          const v = amt * (price || 0);
+          perAssetValues[t] = v;
+          totalValue += v;
+        }
+
+        const [y,m,dd] = d.split('-').map(Number);
+        const dateObj = new Date(y, m-1, dd);
+
+        history.push({ date: dateObj, value: totalValue, holdings: { ...cumulative }, perAssetValues });
+      }
+
+      history.sort((a,b) => new Date(a.date) - new Date(b.date));
+      setPortfolioHistory(history);
+      console.debug('Rebuilt portfolioHistory from earnings:', history.map(h => ({ date: h.date.toISOString().split('T')[0], value: h.value })));
+    } catch (err) {
+      console.error('Error rebuilding portfolio history from earnings', err);
     }
   };
 
@@ -266,16 +340,26 @@ function App() {
     try {
       // Compute current portfolio value and add/replace a history point with date=dateStr
       const { totalValue } = calculateAllocations(holdings, prices);
-      const dateObj = new Date(dateStr);
+      // Parse dateStr as local date (avoid timezone shifts)
+      const [y,m,d] = dateStr.split('-').map(Number);
+      const dateObj = new Date(y, m - 1, d);
       setPortfolioHistory(prev => {
         // Remove any existing point with same date string
-        const filtered = prev.filter(p => new Date(p.date).toISOString().split('T')[0] !== dateStr);
-        return [...filtered, { date: dateObj, value: totalValue }].sort((a,b) => new Date(a.date) - new Date(b.date));
+        const filtered = prev.filter(p => {
+          const pd = p.date instanceof Date ? p.date : new Date(p.date);
+          return pd.toISOString().split('T')[0] !== dateStr;
+        });
+        const merged = [...filtered, { date: dateObj, value: totalValue }];
+        merged.sort((a,b) => new Date(a.date) - new Date(b.date));
+        console.debug('portfolioHistory updated (addHistoryPoint):', merged.map(x => ({ date: new Date(x.date).toISOString().split('T')[0], value: x.value })));
+        return merged;
       });
     } catch (err) {
       console.error('Error adding history point for date', dateStr, err);
     }
   };
+
+  // Backfill helper removed
 
   const loadEarningsSummary = async () => {
     try {
@@ -309,23 +393,7 @@ function App() {
   const handleOpenActivitiesManager = () => setShowActivitiesManager(true);
   const handleCloseActivitiesManager = () => setShowActivitiesManager(false);
 
-  const loadActivitiesSummary = async () => {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      const todays = await capitalBuildingDB.getActivitiesByDate(today);
-      const totalToday = (todays || []).reduce((s, e) => s + (e.amountUSDT || 0), 0);
-
-      const end = new Date();
-      const start = new Date(end);
-      start.setDate(start.getDate() - 6);
-      const range = await capitalBuildingDB.getActivitiesByDateRange(start.toISOString().split('T')[0], end.toISOString().split('T')[0]);
-      const total7 = (range || []).reduce((s, e) => s + (e.amountUSDT || 0), 0);
-
-      setActivitiesSummary({ totalToday, total7 });
-    } catch (err) {
-      console.error('Error loading activities summary:', err);
-    }
-  };
+  // Activities summary removed from dashboard display per UX decision; keep ActivitiesManager modal available
 
   const handleOpenEarningsManager = () => setShowEarningsManager(true);
   const handleCloseEarningsManager = () => setShowEarningsManager(false);
@@ -394,6 +462,7 @@ function App() {
                 <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
+              {/* Backfill removed */}
               <div className="ml-3">
                 <select value={displayCurrency} onChange={async (e) => {
                   const val = e.target.value;
@@ -468,10 +537,7 @@ function App() {
                 <div className="text-xl font-bold">{earningsSummary?.total7 ? formatCurrency(earningsSummary.total7) : formatCurrency(0)}</div>
               </div>
 
-              <div className="bg-crypto-card p-4 rounded-lg border border-gray-700 text-white">
-                <div className="text-sm text-gray-400">Activities Today</div>
-                <div className="text-xl font-bold">{activitiesSummary?.totalToday ? formatCurrency(activitiesSummary.totalToday) : formatCurrency(0)}</div>
-              </div>
+              {/* Activities Today card removed (per UX decision) */}
 
               <div className="bg-crypto-card p-4 rounded-lg border border-gray-700 text-white">
                 <div className="text-sm text-gray-400">Trades PNL</div>
@@ -528,7 +594,7 @@ function App() {
 
       {showActivitiesManager && (
         <ActivitiesManager onClose={handleCloseActivitiesManager} onSaved={async (payload, { action }) => {
-          await loadActivitiesSummary();
+          // Activities summary is not shown on dashboard; just refresh prices
           fetchPrices();
         }} />
       )}

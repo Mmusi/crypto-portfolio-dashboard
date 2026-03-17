@@ -1,5 +1,6 @@
 // Conversion service for token to USDT conversion
 import axios from 'axios';
+import cryptoApi from './cryptoApi';
 
 class ConversionService {
   constructor() {
@@ -24,6 +25,34 @@ class ConversionService {
     }
 
     try {
+      // First try using cryptoApi's price fetching (uses COIN_ID_MAP and resolution)
+      try {
+        const prices = await cryptoApi.getPrices([symbol]);
+        const uc = symbol.toUpperCase();
+        if (prices && prices[uc] && prices[uc].price) {
+          const price = prices[uc].price;
+          this.priceCache[symbol] = price;
+          this.lastUpdate[symbol] = now;
+          return price;
+        }
+        // If not found, attempt to resolve coin id and fetch directly
+        const coinId = await cryptoApi.resolveCoinId(symbol);
+        if (coinId) {
+            const resp = await axios.get(
+              `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
+              { timeout: 5000 }
+            );
+            const price = resp.data[coinId]?.usd || 0;
+          if (price > 0) {
+            this.priceCache[symbol] = price;
+            this.lastUpdate[symbol] = now;
+            return price;
+          }
+        }
+      } catch (innerErr) {
+          console.warn('conversionService: cryptoApi.getPrices/resolve failed, falling back', innerErr && innerErr.message);
+      }
+
       // Map common symbols to CoinGecko IDs
       const coinIds = {
         'BTC': 'bitcoin',
@@ -68,7 +97,6 @@ class ConversionService {
         `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
         { timeout: 5000 }
       );
-
       const price = response.data[coinId]?.usd || 0;
       
       // Update cache

@@ -13,6 +13,8 @@ const TradesManager = ({ onClose, onSaved }) => {
   const [form, setForm] = useState({ tradeId: '', exchange: EXCHANGES[0], pair: '', tradeType: TRADE_TYPES[0], direction: DIRECTIONS[0], entryPrice: '', exitPrice: '', size: '', notes: '' });
   const [editingId, setEditingId] = useState(null);
   const [status, setStatus] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState('');
 
   useEffect(() => { loadTrades(); }, [date]);
 
@@ -22,6 +24,10 @@ const TradesManager = ({ onClose, onSaved }) => {
   };
 
   const handleSave = async () => {
+    if (saving) return;
+    setValidationError('');
+    setSaving(true);
+
     const payload = {
       date,
       tradeId: form.tradeId || undefined,
@@ -36,15 +42,41 @@ const TradesManager = ({ onClose, onSaved }) => {
     };
 
     try {
-      await capitalBuildingDB.addTrade(payload);
-      if (onSaved) onSaved(payload, { action: 'add' });
-      setStatus('Saved');
+      // Prevent duplicates client-side
+      const existing = await capitalBuildingDB.getTradesByDateRange(date, date);
+      const dup = (existing || []).find(t => (
+        (t.exchange || '') === (payload.exchange || '')
+        && (t.pair || '') === (payload.pair || '')
+        && Number(t.entryPrice || 0) === Number(payload.entryPrice || 0)
+        && Number(t.exitPrice || 0) === Number(payload.exitPrice || 0)
+        && Number(t.size || 0) === Number(payload.size || 0)
+      ));
+      if (dup) {
+        setValidationError('Duplicate trade detected for this date (same exchange, pair, prices, size).');
+        setStatus('Duplicate');
+        setSaving(false);
+        if (onSaved) onSaved(dup, { action: 'duplicate' });
+        await loadTrades();
+        setTimeout(() => setStatus(''), 1200);
+        return;
+      }
+
+      const id = await capitalBuildingDB.addTrade(payload);
+      if (id && id === payload.id) {
+        setStatus('Duplicate (existing entry)');
+        if (onSaved) onSaved(payload, { action: 'duplicate' });
+      } else {
+        if (onSaved) onSaved(payload, { action: 'add' });
+        setStatus('Saved');
+      }
       setForm({ tradeId: '', exchange: EXCHANGES[0], pair: '', tradeType: TRADE_TYPES[0], direction: DIRECTIONS[0], entryPrice: '', exitPrice: '', size: '', notes: '' });
       await loadTrades();
       setTimeout(() => setStatus(''), 1200);
     } catch (err) {
       console.error('Error saving trade:', err);
       setStatus('Error');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -99,7 +131,8 @@ const TradesManager = ({ onClose, onSaved }) => {
         <div className="flex items-center justify-between mb-4">
           <div className="text-sm text-gray-300">{status}</div>
           <div className="flex items-center space-x-2">
-            <button onClick={handleSave} className="flex items-center bg-crypto-blue hover:bg-blue-600 text-white px-3 py-2 rounded"><Save className="w-4 h-4 mr-2" /> Save</button>
+            {validationError && <div className="text-sm text-yellow-300 mr-2">{validationError}</div>}
+            <button onClick={handleSave} disabled={saving} className={`flex items-center ${saving ? 'opacity-60 cursor-not-allowed' : 'bg-crypto-blue hover:bg-blue-600'} text-white px-3 py-2 rounded`}><Save className="w-4 h-4 mr-2" /> {saving ? 'Saving...' : 'Save'}</button>
           </div>
         </div>
 

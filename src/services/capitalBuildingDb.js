@@ -159,6 +159,23 @@ class CapitalBuildingDB {
     }
 
     console.debug('capitalBuildingDB.addEarning -> adding record:', record);
+    // Prevent duplicate earnings: same date, tokenName, platformName, amountToken, category
+    try {
+      const byDate = await this.getEarningsByDate(record.date);
+      const exists = (byDate || []).find(e => (
+        (e.tokenName || '').toUpperCase() === (record.tokenName || '').toUpperCase()
+        && (e.platformName || '') === (record.platformName || '')
+        && Number(e.amountToken || 0) === Number(record.amountToken || 0)
+        && (e.category || '') === (record.category || '')
+      ));
+      if (exists) {
+        console.debug('capitalBuildingDB.addEarning -> duplicate detected, returning existing id', exists.id);
+        return exists.id;
+      }
+    } catch (err) {
+      console.warn('Error checking duplicates before addEarning', err);
+    }
+
     return this.add('earnings', record);
   }
 
@@ -193,6 +210,24 @@ class CapitalBuildingDB {
     }
 
     console.debug('capitalBuildingDB.addTrade -> adding record:', record);
+    // Prevent duplicate trades: same date, exchange, pair, entryPrice, exitPrice, size
+    try {
+      const byDate = await this.getTradesByDateRange(record.date, record.date);
+      const exists = (byDate || []).find(t => (
+        (t.exchange || '') === (record.exchange || '')
+        && (t.pair || '') === (record.pair || '')
+        && Number(t.entryPrice || 0) === Number(record.entryPrice || 0)
+        && Number(t.exitPrice || 0) === Number(record.exitPrice || 0)
+        && Number(t.size || 0) === Number(record.size || 0)
+      ));
+      if (exists) {
+        console.debug('capitalBuildingDB.addTrade -> duplicate detected, returning existing id', exists.id);
+        return exists.id;
+      }
+    } catch (err) {
+      console.warn('Error checking duplicates before addTrade', err);
+    }
+
     return this.add('trades', record);
   }
 

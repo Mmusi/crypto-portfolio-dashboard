@@ -34,7 +34,21 @@ class CryptoApiService {
     if (cached) return cached;
 
     try {
-      const coinIds = symbols.map(s => COIN_ID_MAP[s]).filter(Boolean).join(',');
+      // Resolve any missing coin ids
+      const symbolToId = {};
+      for (const s of symbols) {
+        const uc = s.toUpperCase();
+        let id = COIN_ID_MAP[uc];
+        if (!id) {
+          try {
+            id = await this.resolveCoinId(uc);
+          } catch (err) {
+            // ignore
+          }
+        }
+        if (id) symbolToId[uc] = id;
+      }
+      const coinIds = Object.values(symbolToId).join(',');
       const response = await axios.get(`${COINGECKO_API}/simple/price`, {
         params: {
           ids: coinIds,
@@ -47,9 +61,10 @@ class CryptoApiService {
 
       const prices = {};
       symbols.forEach(symbol => {
-        const coinId = COIN_ID_MAP[symbol];
+        const uc = symbol.toUpperCase();
+        const coinId = symbolToId[uc] || COIN_ID_MAP[uc];
         if (coinId && response.data[coinId]) {
-          prices[symbol] = {
+          prices[uc] = {
             price: response.data[coinId].usd,
             change24h: response.data[coinId].usd_24h_change || 0,
             volume24h: response.data[coinId].usd_24h_vol || 0,
@@ -94,6 +109,69 @@ class CryptoApiService {
     } catch (error) {
       console.error(`Error fetching historical data for ${symbol}:`, error);
       return [];
+    }
+  }
+
+  // Resolve a coin symbol to a CoinGecko coin id (cache in COIN_ID_MAP)
+  async resolveCoinId(symbol) {
+    const s = (symbol || '').toUpperCase();
+    if (!s) return null;
+    if (COIN_ID_MAP[s]) return COIN_ID_MAP[s];
+
+    try {
+      let resp = await axios.get(`${COINGECKO_API}/search`, { params: { query: s } });
+      const coins = resp.data.coins || [];
+      // If not found and symbol ends with S (plural), try singular form
+      if ((!coins || coins.length === 0) && s.endsWith('S')) {
+        const singular = s.slice(0, -1);
+        resp = await axios.get(`${COINGECKO_API}/search`, { params: { query: singular } });
+      }
+      const coins2 = resp.data.coins || [];
+      const coinsList = coins2.length ? coins2 : coins;
+      // Try to find a coin whose symbol matches exactly (case-insensitive)
+      let found = coinsList.find(c => (c.symbol || '').toUpperCase() === s);
+      if (!found && coinsList.length === 0) {
+        // Fallback: fetch entire coin list and try to match symbol
+        const listResp = await axios.get(`${COINGECKO_API}/coins/list`);
+        const list = listResp.data || [];
+        found = list.find(c => (c.symbol || '').toUpperCase() === s || (c.id || '').toLowerCase() === s.toLowerCase());
+      }
+      if (!found) {
+        // Try loose matches by id or name
+        found = coins.find(c => (c.id || '').toLowerCase().includes(s.toLowerCase()) || (c.name || '').toLowerCase().includes(s.toLowerCase()));
+      }
+      if (found && found.id) {
+        COIN_ID_MAP[s] = found.id; // cache mapping
+        console.debug(`cryptoApi.resolveCoinId: resolved ${s} -> ${found.id}`);
+        return found.id;
+      }
+    } catch (err) {
+      console.warn('Error resolving coin id for', symbol, err.message || err);
+    }
+
+    return null;
+  }
+
+  // Get historical price for a symbol on a specific date (YYYY-MM-DD)
+  async getPriceOnDate(symbol, dateStr) {
+    if (!symbol || !dateStr) return null;
+    const cacheKey = `history_price_${symbol}_${dateStr}`;
+    const cached = this.getFromCache(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const coinId = await this.resolveCoinId(symbol);
+      if (!coinId) return null;
+      // CoinGecko expects date as DD-MM-YYYY
+      const [y,m,d] = dateStr.split('-').map(Number);
+      const dateParam = `${String(d).padStart(2,'0')}-${String(m).padStart(2,'0')}-${y}`;
+      const resp = await axios.get(`${COINGECKO_API}/coins/${coinId}/history`, { params: { date: dateParam } });
+      const price = resp.data?.market_data?.current_price?.usd || null;
+      if (price !== null) this.setCache(cacheKey, price);
+      return price;
+    } catch (err) {
+      console.warn(`Error fetching historical price for ${symbol} on ${dateStr}:`, err.message || err);
+      return null;
     }
   }
 
